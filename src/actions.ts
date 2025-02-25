@@ -1,13 +1,15 @@
 import {randomUUID} from 'crypto';
+import {
+  Action,
+  Card,
+  Discussion,
+  Game,
+  GameDic,
+  Player,
+  State,
+} from './utils/types';
+import {state} from './utils/state';
 
-type Action =
-  | 'Income'
-  | 'Foreign aid'
-  | 'Coup'
-  | 'Tax'
-  | 'Assassinate'
-  | 'Exchange'
-  | 'Steal';
 export const actions: Action[] = [
   'Income',
   'Foreign aid',
@@ -20,67 +22,86 @@ export const actions: Action[] = [
 
 export const addDiscussion = (
   room: string,
-  action: string,
-  player: any,
-  target: any,
-  game: any,
-  parent: string | undefined,
+  action: Action,
+  step: number = 0,
+  player: Player,
+  game: GameDic,
+  playerWhomBeBlessed: Player,
+  playerWhomBeCoursed: Player,
+  target?: Player,
 ) => {
   if (!game[room].openDiscussions) game[room].openDiscussions = [];
-  const uuid = randomUUID();
-  game[room].openDiscussions.push({id: uuid, action, player, target, parent});
-};
-
-export const resolveParents = (recursionStart: any) => {
-  if (!recursionStart.parent) return;
-
-  resolveParents(recursionStart.parent);
-};
-export const resolveDiscussion = (
-  room: string,
-  game: any,
-  discussionId: string,
-) => {
-  game[room].openDiscussions = [];
-  /* 
-    if (!game[room].openDiscussions) game[room].openDiscussions = [];
-  if (game[room].openDiscussions.length == 0) return;
-  const discussionIndex = game[room].openDiscussions.findIndex((disc: any) => {
-    return disc.id == discussionId;
+  game[room].openDiscussions.push({
+    room,
+    action,
+    step: step + 1,
+    player,
+    target,
+    playersVotingToSkip: [],
+    playerWhomBeBlessed,
+    playerWhomBeCoursed,
   });
-  const discussionParent = game[room].openDiscussions[discussionIndex].parent;
-  game[room].openDiscussions.splice(discussionIndex, 1);
+};
+export const addLoseCardDiscussion = (
+  room: string,
+  player: Player,
+  target: Player,
 
-  if (discussionParent) resolveDiscussion(room, game, discussionParent); */
+  playerWhomBeBlessed: Player,
+  playerWhomBeCoursed: Player,
+) => {
+  addDiscussion(
+    room,
+    'Lose card',
+    undefined,
+    player,
+    state.game,
+    playerWhomBeBlessed,
+    playerWhomBeCoursed,
+    target,
+  );
 };
 
-export const playerHaveAction = (player: any, action: Action) => {
+export const resolveDiscussion = (room: string, game: GameDic) => {
+  game[room].openDiscussions = [];
+};
+
+export const playerHaveAction = (player: Player, action: Action) => {
   if (action == 'Income' || action == 'Coup' || action == 'Foreign aid') {
     return true;
   }
   return player.cards.some(
-    (card: any) => card.action.toLowerCase() == action.toLowerCase(),
+    (card: Card) => card.action.toLowerCase() == action.toLowerCase(),
   );
 };
-export const playerHaveCounterAction = (player: any, counteraction: Action) => {
-  return player.cards.some((card: any) => {
-    console.log('card.counteraction', card.counteraction);
-    console.log('counteraction', counteraction);
+export const playerHaveCounterAction = (
+  player: Player,
+  counteraction: Action,
+) => {
+  return player.cards.some((card: Card) => {
+    console.log('Counteraction a comparar', counteraction.toLowerCase());
+    console.log('Counteraction de la carta', card.counteraction.toLowerCase());
+    console.log(
+      'Iguales?',
+      card.counteraction.toLowerCase() == counteraction.toLowerCase(),
+    );
     return card.counteraction.toLowerCase() == counteraction.toLowerCase();
   });
 };
 
-export const cardWherePlayerHaveAction = (player: any, action: Action) => {
-  return player.cards.find((card: any) => card.action == action);
+export const cardWherePlayerHaveAction = (player: Player, action: Action) => {
+  return player.cards.find((card: Card) => card.action == action);
 };
-const loseACard = (room: string, player: any, card: string, game: any) => {
+const loseACard = (
+  room: string,
+  player: Player,
+  card: number | undefined,
+  game: any,
+) => {
   let newThrows = new Array<any>();
   game[room].players.forEach((pl: any, i: number) => {
     if (pl.id === player.id) {
-      game[room].players[i].cards.forEach((c: any, j: number) => {
-        if (c.name === card)
-          newThrows = game[room].players[i].cards.splice(j, 1);
-      });
+      newThrows = game[room].players[i].cards.splice(card, 1);
     }
   });
   game[room].throws.push([...newThrows]);
@@ -89,87 +110,202 @@ const loseACard = (room: string, player: any, card: string, game: any) => {
 const allPlayersState = () => {
   return {name: 'all'};
 };
-export default function action(
+
+const processDiscusion = (
   room: string,
-  player: any,
-  action: any,
-  target: any = undefined,
-  game: any,
-  discussionId: string | undefined,
-) {
-  switch (action) {
-    case 'Income':
-      game[room].players.forEach((pl: any) => {
-        if (pl.id === player.id) pl.coins += 1;
-      });
-      return true;
-      break;
-    case 'Coup':
-      addDiscussion(room, 'Coup', player, target, game, undefined);
-      return false;
-      break;
-    case 'ResolveCoup':
-      //addDiscussion(room, 'Coup', player, target, game);
-      loseACard(room, player, target, game);
-      resolveDiscussion(room, game, discussionId || '');
-      return true;
-      break;
-    case 'Foreign aid':
-      addDiscussion(
+  game: GameDic,
+  player: Player,
+  target: Player | undefined,
+  action: Action,
+  resolve: boolean,
+  step: number,
+
+  playerWhomBeBlessed: Player,
+  playerWhomBeCoursed: Player,
+) => {
+  if (!target) return false;
+
+  if (step == 2) {
+    if (playerHaveCounterAction(target, action)) {
+      addLoseCardDiscussion(
         room,
-        'Foreign aid',
+        target,
         player,
-        allPlayersState(),
-        game,
-        undefined,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
       );
-      return false;
-    case 'DenyForeign aid':
-      addDiscussion(
+    } else {
+      addLoseCardDiscussion(
         room,
-        'DenyForeign aid',
         player,
         target,
-        game,
-        discussionId,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
       );
-      //resolveDiscussion(room, 'Foreign aid', player, undefined, game);
-      return false;
-      break;
-    case 'ChallengeDenyForeign aid':
-      console.log('HASTA AQUI PINCHA');
-      if (!playerHaveCounterAction(target, 'Foreign aid')) {
-        //const card = cardWherePlayerHaveAction(target, 'Foreign aid');
-        //swapCardWithDeck(game[room].deck, card, target);
-        addDiscussion(
-          room,
-          'Wins challenge',
-          player,
-          target,
-          game,
-          discussionId,
-        );
-      } else {
-        addDiscussion(
-          room,
-          'Wins challenge',
-          target,
-          player,
-          game,
-          discussionId,
-        );
-      }
-      //resolveDiscussion(room, 'Foreign aid', player, undefined, game);
-      return false;
-      break;
-
-    case 'Lose a card':
-      loseACard(room, player, target, game);
-      if (discussionId) resolveDiscussion(room, game, discussionId);
-
-      return true;
-
-    default:
-      break;
+    }
+    /* resolveDiscussion(room, game); */
   }
+  if (step == 3) {
+    console.log(
+      'playerHaveCounterAction',
+      playerHaveCounterAction(target, action),
+    );
+  }
+};
+
+const takeIncome = (room: string, player: Player) => {
+  state.game[room].players.forEach((pl: Player, i: number) => {
+    if (pl.id === player.id) {
+      pl.coins += 1;
+    }
+  });
+};
+
+const handleResolve = (
+  room: string,
+  action: Action,
+  step: number,
+  player: Player,
+  game: GameDic,
+  target: Player,
+  playerWhomBeBlessed: Player,
+  playerWhomBeCoursed: Player,
+) => {
+  console.log('Handle Resolve');
+  if (step % 2 == 0) {
+  }
+
+  if (action == 'Foreign aid')
+    state.game[room].players.forEach(pl => {
+      if (pl.id == playerWhomBeBlessed.id) pl.coins += 2;
+    });
+  resolveDiscussion(room, game);
+};
+
+export default function action(
+  room: string,
+  action: Action,
+  step: number,
+  player: Player,
+  resolve: boolean,
+  game: GameDic,
+  playerWhomBeBlessed: Player,
+  playerWhomBeCoursed: Player,
+  target?: Player,
+) {
+  console.log('action', action);
+  console.log('step', step);
+  console.log('player', player);
+  console.log('resolve', resolve);
+  console.log('target', target);
+
+  let playersVotingToSkip = [];
+  if (state.game[room].openDiscussions.length > 0) {
+    playersVotingToSkip =
+      state.game[room].openDiscussions[
+        state.game[room].openDiscussions.length - 1
+      ].playersVotingToSkip;
+  }
+
+  if (action == 'Income') {
+    takeIncome(room, player);
+    return true;
+  }
+  if (target && action == 'Coup') {
+    state.game[room].players.forEach(pl => {
+      if (pl.id == player.id) pl.coins -= 7;
+    });
+    addLoseCardDiscussion(
+      room,
+      player,
+      target,
+      playerWhomBeBlessed,
+      playerWhomBeCoursed,
+    );
+    return false;
+  }
+  const lastDiscussion =
+    state.game[room].openDiscussions[
+      state.game[room].openDiscussions.length - 1
+    ];
+
+  if (
+    lastDiscussion &&
+    lastDiscussion.target &&
+    lastDiscussion.action == 'Lose card'
+  ) {
+    loseACard(room, lastDiscussion.target, lastDiscussion?.cardToThrow, game);
+    resolveDiscussion(room, game);
+    return true;
+  }
+
+  if (step == 2 || step == 3) {
+    if (resolve || action == 'Foreign aid')
+      return processDiscusion(
+        room,
+        state.game,
+        player,
+        target,
+        action,
+        resolve,
+        step,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
+      );
+    else {
+      addDiscussion(
+        room,
+        action,
+        step,
+        player,
+        game,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
+        target,
+      );
+      return false;
+    }
+  }
+  if (step == 1) {
+    if (resolve && target) {
+      handleResolve(
+        room,
+        action,
+        step,
+        player,
+        game,
+        target,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
+      );
+      return true;
+    } else {
+      addDiscussion(
+        room,
+        action,
+        step,
+        player,
+        game,
+        playerWhomBeBlessed,
+        playerWhomBeCoursed,
+        target,
+      );
+    }
+  }
+
+  if (step == 0) {
+    addDiscussion(
+      room,
+      action,
+      step,
+      player,
+      game,
+      playerWhomBeBlessed,
+      playerWhomBeCoursed,
+      target,
+    );
+  }
+
+  /* return winDiscusion(room, action, step, game, player, target);
+   */ return false;
 }

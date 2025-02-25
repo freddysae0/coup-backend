@@ -1,1 +1,3 @@
-/cert.csr
+cert.csr
+node_modules
+dist
