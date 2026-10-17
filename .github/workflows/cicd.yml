@@ -3,14 +3,39 @@ name: Create and publish a Docker image
 on:
   push:
     branches: ['master']
+  pull_request:
+    branches: ['master']
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    name: Lint and Test (CI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (rules, fuzzing, WebSocket simulations)
+        run: npm test
+
   build-and-push-image:
     name: Deploy to VPS (CD)
+    needs: test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,8 +82,12 @@ jobs:
           username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
+            set -e
+            # The image is private: log in with this job's short-lived token.
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker pull ghcr.io/freddysae0/coup-backend:latest
-            docker stop ${{ vars.SERVER_CONTAINER }}
-            docker rm ${{ vars.SERVER_CONTAINER }}
-            docker rmi $(docker images -q | tail -n +5)
-            docker run -p 8000:8000 -d --name ${{ vars.SERVER_CONTAINER }} ghcr.io/freddysae0/coup-backend:latest
+            docker logout ghcr.io
+            docker stop ${{ vars.SERVER_CONTAINER }} || true
+            docker rm ${{ vars.SERVER_CONTAINER }} || true
+            docker run -p 8000:8000 -d --restart unless-stopped --name ${{ vars.SERVER_CONTAINER }} ghcr.io/freddysae0/coup-backend:latest
+            docker image prune -f
