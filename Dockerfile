@@ -1,18 +1,15 @@
-FROM node:23-alpine
+FROM node:22-alpine
 
-# Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
+COPY package*.json ./
+RUN npm ci
+
 COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Install dependencies
-RUN npm install
+# HTTP (health check) and WebSocket share this port.
+ENV PORT=8000
+EXPOSE 8000
 
-
-
-# Expose port (adjust if needed)
-EXPOSE 3000
-
-# Start the application
-CMD ["npm", "run" , "dev"]
+CMD ["node", "dist/index.js"]

@@ -1,19 +1,15 @@
 {
   "compilerOptions": {
-    "target": "es6",
+    "target": "es2020",
     "module": "commonjs",
-    "lib": ["es6"],
+    "lib": ["es2020"],
     "strict": true,
-
-    // Specifies the output directory for compiled JavaScript files.
-    // TypeScript will place all generated files in the "dist" folder.
     "outDir": "./dist",
-
-    // Specifies the root directory for TypeScript source files.
-    // TypeScript looks for files in the "src" folder when compiling.
     "rootDir": "./src",
     "sourceMap": true,
     "noImplicitAny": true,
-    "esModuleInterop": true
-  }
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
 }

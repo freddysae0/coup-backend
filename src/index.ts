@@ -1,39 +1,25 @@
-import express from 'express';
-import {wss} from './ws';
-import {
-  createRoom,
-  isGameStarted,
-  playTurn,
-  startGame,
-  updatePlayerName,
-} from './utils/methods';
-import {Req} from './utils/types';
-export const app = express();
-// Initialize WebSocket server
+import {createCoupServer} from './server';
 
-// const createRoom = (room: string): object => JSON.pa rse(msg);
-// const joinRoom = (room: string): object => JSON.parse(msg);
+const num = (value: string | undefined, fallback: number) =>
+  value !== undefined && value !== '' ? Number(value) : fallback;
 
-const parse = (msg: string) => JSON.parse(msg);
-
-wss.on('connection', ws => {
-  console.log('A new client connected.');
-  ws.on('message', message => {
-    const req: Req = parse(message.toString());
-    console.log('Received message:', req);
-    if (req.type == 'isGameStarted') isGameStarted(req, ws);
-    if (req.type == 'createRoom') createRoom(req, ws);
-    if (req.type == 'updatePlayerName') updatePlayerName(req, ws);
-    if (req.type == 'startGame') startGame(req);
-    if (req.type == 'playTurn') playTurn(req);
-  });
-
-  ws.on('close', () => {
-    console.log('A client disconnected.');
-  });
+const coup = createCoupServer({
+  responseTimeoutMs: num(process.env.RESPONSE_TIMEOUT_MS, 30_000),
+  disconnectGraceMs: num(process.env.DISCONNECT_GRACE_MS, 120_000),
+  log: (...args) => console.log(new Date().toISOString(), ...args),
 });
 
-const port = 5678;
-app.listen(port, () => {
-  console.log(`Server started on http://localhost:${port}`);
+const port = num(process.env.PORT, 8000);
+void coup.listen(port).then(p => {
+  console.log(
+    `Coup server listening on http://localhost:${p} (WebSocket on the same port)`,
+  );
 });
+
+const shutdown = () => {
+  void coup.close().then(() => {
+    process.exitCode = 0;
+  });
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
