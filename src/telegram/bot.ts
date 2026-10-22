@@ -123,9 +123,9 @@ export function createBot(opts: BotOptions) {
     return formatRoomDetail(detail, isFollowing(chat, room));
   };
 
-  const roomsMessage = async () => {
+  const roomsMessage = async (page = 0) => {
     const {rooms} = await backend.get<{rooms: RoomSummary[]}>('/admin/rooms');
-    return formatRoomList(rooms);
+    return formatRoomList(rooms, {page});
   };
 
   const follow = (chat: string, room: string) => {
@@ -244,7 +244,7 @@ export function createBot(opts: BotOptions) {
       }
       const msg =
         parsed.kind === 'rooms'
-          ? await roomsMessage()
+          ? await roomsMessage(Number(parsed.room) || 0)
           : await roomMessage(chat, parsed.room);
       await edit(chat, messageId, msg);
       await answer(toast);

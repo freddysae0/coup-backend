@@ -9,6 +9,7 @@ import {
   formatNotice,
   formatRoomDetail,
   formatRoomList,
+  MAX_MESSAGE,
   formatStats,
   parseCallback,
   parseChatIds,
@@ -172,7 +173,7 @@ test('room list shows leader, turn and one button per room', () => {
         winner: 'Caro',
       }),
     ],
-    NOW,
+    {now: NOW},
   );
   assert.match(msg.text, /Salas \(2\)/);
   assert.match(msg.text, /turno de Ana/);
@@ -184,6 +185,40 @@ test('room list shows leader, turn and one button per room', () => {
     ['r:mesa1', 'r:fin'],
   );
   assert.equal(formatRoomList([]).keyboard, undefined);
+});
+
+test('room list pages stay under the Telegram limit with matching buttons', () => {
+  const long = 'x'.repeat(24);
+  const rooms = Array.from({length: 30}, (_, i) =>
+    summary({
+      id: `${String(i).padStart(2, '0')}${'r'.repeat(60)}`,
+      turn: long,
+      leader: [{name: long, cards: 2, coins: 7}],
+    }),
+  );
+  const seen: string[] = [];
+  let page = 0;
+  for (;;) {
+    const msg = formatRoomList(rooms, {page, now: NOW});
+    assert.ok(msg.text.length <= MAX_MESSAGE, `page ${page} too long`);
+    const rows = msg.keyboard!;
+    const roomRows = rows.filter(row => row[0].callback_data.startsWith('r:'));
+    const ids = roomRows.map(row => row[0].callback_data.slice(2));
+    for (const id of ids) assert.ok(msg.text.includes(id));
+    seen.push(...ids);
+    const next = rows
+      .flat()
+      .find(b => b.text.startsWith('Siguientes'))?.callback_data;
+    if (!next) break;
+    assert.equal(parseCallback(next)!.kind, 'rooms');
+    page = Number(parseCallback(next)!.room);
+  }
+  assert.deepEqual(
+    seen,
+    rooms.map(r => r.id),
+  );
+  // Out-of-range pages fall back to the last one instead of failing.
+  assert.match(formatRoomList(rooms, {page: 99, now: NOW}).text, /página/);
 });
 
 test('room detail escapes names and only shows counts for hidden cards', () => {

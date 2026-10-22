@@ -220,13 +220,20 @@ const leaderLine = (r: RoomSummary) => {
   return `líder ${escapeHtml(l.name)} (${l.cards}🂠 ${l.coins}🪙)`;
 };
 
+/** Rooms per page: also the number of buttons, so keep it thumb-friendly. */
+export const ROOMS_PER_PAGE = 10;
+
+/**
+ * Lists rooms one page at a time. Pages are cut by rendered length as well as
+ * by count, so long room ids or names never push a message past Telegram's
+ * limit, and the buttons always match the rooms on screen.
+ */
 export function formatRoomList(
   rooms: RoomSummary[],
-  now = Date.now(),
+  {page = 0, now = Date.now()}: {page?: number; now?: number} = {},
 ): Message {
   if (!rooms.length) return {text: 'No hay salas activas ahora mismo.'};
-  const shown = rooms.slice(0, 30);
-  const lines = shown.map(r => {
+  const line = (r: RoomSummary) => {
     const parts = [
       `<b>${escapeHtml(r.id)}</b> · ${STATUS_ES[r.status]}`,
       `${r.players} jug.` +
@@ -238,17 +245,50 @@ export function formatRoomList(
     const leader = leaderLine(r);
     if (leader) parts.push(leader);
     parts.push(ago(r.lastActivity, now));
-    return '• ' + parts.join(' · ');
-  });
-  if (rooms.length > shown.length)
-    lines.push(`… y ${rooms.length - shown.length} más`);
-  const keyboard = shown
+    return truncate('• ' + parts.join(' · '), 600);
+  };
+
+  // Leave room for the header with the page counter.
+  const budget = MAX_MESSAGE - 120;
+  const pages: {rooms: RoomSummary[]; lines: string[]}[] = [];
+  let current: (typeof pages)[number] = {rooms: [], lines: []};
+  let length = 0;
+  for (const r of rooms) {
+    const text = line(r);
+    const full =
+      current.rooms.length >= ROOMS_PER_PAGE ||
+      length + text.length + 1 > budget;
+    if (current.rooms.length && full) {
+      pages.push(current);
+      current = {rooms: [], lines: []};
+      length = 0;
+    }
+    current.rooms.push(r);
+    current.lines.push(text);
+    length += text.length + 1;
+  }
+  pages.push(current);
+
+  const index = Math.min(Math.max(0, Math.floor(page) || 0), pages.length - 1);
+  const shown = pages[index];
+  const header =
+    `<b>🃏 Salas (${rooms.length})</b>` +
+    (pages.length > 1 ? ` · página ${index + 1}/${pages.length}` : '');
+  const keyboard: Keyboard = shown.rooms
     .map(r => button(`🔍 ${r.id}`, 'room', r.id))
     .filter(row => row.length);
-  return {
-    text: [`<b>🃏 Salas (${rooms.length})</b>`, ...lines].join('\n'),
-    keyboard,
-  };
+  if (pages.length > 1) {
+    const nav = [
+      ...(index > 0
+        ? button('◀︎ Anteriores', 'rooms', String(index - 1))
+        : []),
+      ...(index < pages.length - 1
+        ? button('Siguientes ▶︎', 'rooms', String(index + 1))
+        : []),
+    ];
+    keyboard.push(nav);
+  }
+  return {text: [header, ...shown.lines].join('\n'), keyboard};
 }
 
 const cardsText = (p: RoomDetail['players'][number]) => {

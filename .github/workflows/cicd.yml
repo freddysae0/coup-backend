@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: ['master']
 
+# Runs on master queue up instead of overlapping, so an older commit can never
+# be deployed after a newer one. A newer push replaces a run still waiting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Lint and Test (CI)
@@ -34,15 +40,18 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      # Ploi pulls the repo and runs `docker compose up -d --build` on the
-      # server (see "Deploy on Ploi" in readme.md). Deploying from here instead
-      # of Ploi's quick deploy means a red build never reaches production.
+      # Ploi checks out exactly the commit that passed the tests (the SHA
+      # variable, see "Deploy on Ploi" in readme.md) and runs
+      # `docker compose up -d --build`. Deploying from here instead of Ploi's
+      # quick deploy means a red build never reaches production.
       - name: Trigger Ploi deployment
         run: |
           if [ -z "$PLOI_DEPLOY_WEBHOOK" ]; then
             echo "::warning::PLOI_DEPLOY_WEBHOOK is not set, skipping deploy"
             exit 0
           fi
-          curl --fail-with-body -sS -X POST "$PLOI_DEPLOY_WEBHOOK"
+          curl --fail-with-body -sS -X POST "$PLOI_DEPLOY_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{\"variables\": {\"sha\": \"$GITHUB_SHA\"}}"
         env:
           PLOI_DEPLOY_WEBHOOK: ${{ secrets.PLOI_DEPLOY_WEBHOOK }}

@@ -90,13 +90,21 @@ One-time setup:
 3. In the site directory create `.env` from `.env.example` (Ploi's
    *Environment* tab, or over SSH). Add `COMPOSE_PROFILES=telegram` to run the
    Telegram bot too.
-4. Deploy script:
+4. Deploy script (replace the path with the site directory Ploi shows). GitHub
+   Actions sends the tested commit as the `SHA` variable; a manual deploy from
+   the panel has no `SHA` and takes the tip of `master`:
 
    ```bash
-   cd {SITE_DIRECTORY}
-   git pull origin {BRANCH}
+   set -e
+   cd /home/ploi/api.example.com
+   git fetch origin master
+   TARGET="${SHA:-origin/master}"
+   # Only deploy commits that are on master.
+   git merge-base --is-ancestor "$TARGET" origin/master
+   git checkout --force --detach "$TARGET"
    docker compose up -d --build --remove-orphans
    docker image prune -f
+   echo "Deployed $(git rev-parse --short HEAD)"
    ```
 
 5. Nginx: replace the site's `location / { ... }` block with a WebSocket and
