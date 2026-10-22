@@ -1,0 +1,38 @@
+# Backend + Telegram bot, each in its own container (same image, different
+# command). Usage: cp .env.example .env && docker compose up -d --build
+# The bot only starts when .env sets COMPOSE_PROFILES=telegram.
+services:
+  backend:
+    build: .
+    image: coup-backend:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8000
+    ports:
+      # Only reachable from the host: Nginx terminates TLS and proxies here.
+      - '127.0.0.1:8000:8000'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8000/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  telegram-bot:
+    image: coup-backend:local
+    profiles: ['telegram']
+    command: ['node', 'dist/telegram/index.js']
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BACKEND_URL: http://backend:8000
+      TELEGRAM_STATE_FILE: /data/telegram-state.json
+    volumes:
+      - telegram-data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  telegram-data:

@@ -12,6 +12,7 @@ import {
   ROLES,
 } from './game/types';
 import {viewFor} from './game/view';
+import {createAdmin} from './admin';
 
 export type ServerOptions = {
   port?: number;
@@ -22,6 +23,8 @@ export type ServerOptions = {
   /** Empty rooms are deleted after this long. */
   emptyRoomTtlMs?: number;
   heartbeatMs?: number;
+  /** Bearer token for the read-only /admin API. Unset disables it (404). */
+  adminToken?: string;
   log?: (...args: unknown[]) => void;
 };
 
@@ -49,6 +52,8 @@ type RoomEntry = {
   deadline: number | null;
   disconnectTimers: Map<string, NodeJS.Timeout>;
   emptyTimer?: NodeJS.Timeout;
+  createdAt: number;
+  lastActivity: number;
 };
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -71,11 +76,21 @@ export function createCoupServer(opts: ServerOptions = {}) {
   const later = (fn: () => void, ms: number) => setTimeout(fn, ms).unref();
   const sessions = new Map<WebSocket, Session>();
 
+  const admin = createAdmin({
+    rooms,
+    sockets: () => sessions.size,
+    token: opts.adminToken,
+  });
+
   const app = express();
+  app.use(admin.router);
   app.get('/', (_req, res) => {
     res.json({ok: true, service: 'coup-backend', rooms: rooms.size});
   });
+  // Public and CORS-enabled so the frontend can wake the server up on load
+  // (free hosting tiers put idle services to sleep).
   app.get('/health', (_req, res) => {
+    res.set('Access-Control-Allow-Origin', '*');
     res.json({ok: true});
   });
 
@@ -128,8 +143,10 @@ export function createCoupServer(opts: ServerOptions = {}) {
   };
 
   const afterChange = (entry: RoomEntry) => {
+    entry.lastActivity = Date.now();
     syncResponseTimer(entry);
     broadcast(entry);
+    admin.changed(entry.game.room, entry);
   };
 
   const getRoom = (room: string) => {
@@ -140,9 +157,12 @@ export function createCoupServer(opts: ServerOptions = {}) {
         sockets: new Map(),
         deadline: null,
         disconnectTimers: new Map(),
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
       };
       rooms.set(room, entry);
       log(`room ${room} created`);
+      admin.roomCreated(room, entry);
     }
     if (entry.emptyTimer) {
       clearTimeout(entry.emptyTimer);
@@ -196,6 +216,7 @@ export function createCoupServer(opts: ServerOptions = {}) {
           entry.disconnectTimers.forEach(t => clearTimeout(t));
           rooms.delete(entry.game.room);
           log(`room ${entry.game.room} deleted`);
+          admin.roomDeleted(entry.game.room);
         }
       }, emptyRoomTtlMs);
     }
@@ -206,7 +227,7 @@ export function createCoupServer(opts: ServerOptions = {}) {
 
     if (msg.type === 'join') {
       if (!ID_RE.test(String(msg.room)) || !ID_RE.test(String(msg.playerId))) {
-        throw new GameError('Invalid room or player id');
+        throw new GameError('invalidRoom', 'Invalid room or player id');
       }
       if (session.room) detach(ws);
       const entry = getRoom(msg.room);
@@ -227,7 +248,8 @@ export function createCoupServer(opts: ServerOptions = {}) {
     }
 
     const entry = session.room ? rooms.get(session.room) : undefined;
-    if (!entry || !session.playerId) throw new GameError('Join a room first');
+    if (!entry || !session.playerId)
+      throw new GameError('joinFirst', 'Join a room first');
     const game = entry.game;
     const me = session.playerId;
 
@@ -253,7 +275,8 @@ export function createCoupServer(opts: ServerOptions = {}) {
         game.start(me);
         break;
       case 'action':
-        if (!(msg.action in ACTIONS)) throw new GameError('Unknown action');
+        if (!(msg.action in ACTIONS))
+          throw new GameError('unknownAction', 'Unknown action');
         game.declareAction(me, msg.action, msg.targetId);
         break;
       case 'challenge':
@@ -263,14 +286,16 @@ export function createCoupServer(opts: ServerOptions = {}) {
         game.pass(me);
         break;
       case 'block':
-        if (!ROLES.includes(msg.role)) throw new GameError('Unknown role');
+        if (!ROLES.includes(msg.role))
+          throw new GameError('unknownRole', 'Unknown role');
         game.block(me, msg.role);
         break;
       case 'loseCard':
         game.loseInfluence(me, Number(msg.index));
         break;
       case 'exchange':
-        if (!Array.isArray(msg.keep)) throw new GameError('Invalid exchange');
+        if (!Array.isArray(msg.keep))
+          throw new GameError('invalidExchange', 'Invalid exchange');
         game.exchange(me, msg.keep.map(Number));
         break;
       case 'leave':
@@ -282,7 +307,7 @@ export function createCoupServer(opts: ServerOptions = {}) {
         game.restart(me);
         break;
       default:
-        throw new GameError('Unknown message');
+        throw new GameError('unknownMessage', 'Unknown message');
     }
     afterChange(entry);
   };
@@ -297,16 +322,29 @@ export function createCoupServer(opts: ServerOptions = {}) {
       try {
         msg = JSON.parse(raw.toString());
       } catch {
-        return send(ws, {type: 'error', message: 'Invalid JSON'});
+        return send(ws, {
+          type: 'error',
+          code: 'invalidJson',
+          message: 'Invalid JSON',
+        });
       }
       try {
         handle(ws, session, msg);
       } catch (err) {
         if (err instanceof GameError) {
-          send(ws, {type: 'error', message: err.message});
+          send(ws, {
+            type: 'error',
+            code: err.code,
+            params: err.params,
+            message: err.message,
+          });
         } else {
           log('unexpected error', err);
-          send(ws, {type: 'error', message: 'Server error'});
+          send(ws, {
+            type: 'error',
+            code: 'serverError',
+            message: 'Server error',
+          });
         }
       }
     });
@@ -335,6 +373,7 @@ export function createCoupServer(opts: ServerOptions = {}) {
     server,
     wss,
     rooms,
+    admin,
     listen(port = opts.port ?? 8000) {
       return new Promise<number>(resolve => {
         server.listen(port, () => {
@@ -351,6 +390,7 @@ export function createCoupServer(opts: ServerOptions = {}) {
         entry.disconnectTimers.forEach(t => clearTimeout(t));
       });
       wss.clients.forEach(ws => ws.terminate());
+      admin.close();
       return new Promise<void>(resolve => {
         wss.close(() => server.close(() => resolve()));
       });
