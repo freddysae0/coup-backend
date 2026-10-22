@@ -1,4 +1,4 @@
-name: Create and publish a Docker image
+name: Test and deploy
 
 on:
   push:
@@ -6,9 +6,11 @@ on:
   pull_request:
     branches: ['master']
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+# Runs on master queue up instead of overlapping, so an older commit can never
+# be deployed after a newer one. A newer push replaces a run still waiting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -32,62 +34,24 @@ jobs:
       - name: Test (rules, fuzzing, WebSocket simulations)
         run: npm test
 
-  build-and-push-image:
-    name: Deploy to VPS (CD)
+  deploy:
+    name: Deploy on Ploi (CD)
     needs: test
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-      - name: Build and push Docker image
-        id: push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          no-cache: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.run_number }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Debug tags
-        run: echo ${{ steps.meta.outputs.tags }}
-
-      - name: Run in server
-        uses: appleboy/ssh-action@v0.1.5
-        with:
-          host: ${{ vars.SERVER_IP }}
-          username: ${{ vars.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            set -e
-            # The image is private: log in with this job's short-lived token.
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ghcr.io/freddysae0/coup-backend:latest
-            docker logout ghcr.io
-            docker stop ${{ vars.SERVER_CONTAINER }} || true
-            docker rm ${{ vars.SERVER_CONTAINER }} || true
-            docker run -p 8000:8000 -d --restart unless-stopped --name ${{ vars.SERVER_CONTAINER }} ghcr.io/freddysae0/coup-backend:latest
-            docker image prune -f
+      # Ploi checks out exactly the commit that passed the tests (the SHA
+      # variable, see "Deploy on Ploi" in readme.md) and runs
+      # `docker compose up -d --build`. Deploying from here instead of Ploi's
+      # quick deploy means a red build never reaches production.
+      - name: Trigger Ploi deployment
+        run: |
+          if [ -z "$PLOI_DEPLOY_WEBHOOK" ]; then
+            echo "::warning::PLOI_DEPLOY_WEBHOOK is not set, skipping deploy"
+            exit 0
+          fi
+          curl --fail-with-body -sS -X POST "$PLOI_DEPLOY_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{\"variables\": {\"sha\": \"$GITHUB_SHA\"}}"
+        env:
+          PLOI_DEPLOY_WEBHOOK: ${{ secrets.PLOI_DEPLOY_WEBHOOK }}
