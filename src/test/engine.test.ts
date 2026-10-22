@@ -629,3 +629,28 @@ test('fuzz: 3000 random games always finish with consistent state', () => {
     .filter(a => ACTIONS[a].role || ACTIONS[a].blockedBy.length)
     .forEach(a => assert.ok(stats[a] > 0, `${a} exercised`));
 });
+
+test('log entries carry translatable events and errors carry codes', () => {
+  const game = setup(
+    [
+      ['Duke', 'Captain'],
+      ['Contessa', 'Assassin'],
+    ],
+    [7, 2],
+  );
+  game.declareAction('a', 'Coup', 'b');
+  game.loseInfluence('b', 0);
+  const events = game.log.map(l => l.event);
+  assert.deepEqual(events.slice(-2), [
+    {k: 'declare', name: 'A', action: 'Coup', target: 'B'},
+    {k: 'lose', name: 'B', reason: 'couped', role: 'Contessa'},
+  ]);
+  assert.ok(game.log.every(l => l.event.k && l.text));
+  try {
+    game.declareAction('a', 'Income');
+    assert.fail('should throw');
+  } catch (err) {
+    assert.ok(err instanceof GameError);
+    assert.equal(err.code, 'notYourTurn');
+  }
+});

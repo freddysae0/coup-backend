@@ -1,3 +1,4 @@
 cert.csr
 node_modules
 dist
+.env

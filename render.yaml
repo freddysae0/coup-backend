@@ -1,0 +1,12 @@
+# One-click deploy on Render (free plan): https://render.com/deploy
+services:
+  - type: web
+    name: coup-backend
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22

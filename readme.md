@@ -23,6 +23,111 @@ Environment variables:
 | `PORT`                | `8000`   | HTTP + WebSocket port (any path works, e.g. `/` or `/ws`)    |
 | `RESPONSE_TIMEOUT_MS` | `30000`  | Time to challenge/block before everyone left auto-passes (`0` = never) |
 | `DISCONNECT_GRACE_MS` | `120000` | A player offline this long during a game forfeits (`0` = never) |
+| `ADMIN_TOKEN`         | (unset)  | Enables the read-only `/admin` API (bearer token). Unset = `/admin` is 404 |
+
+## Observability and Telegram bot
+
+With `ADMIN_TOKEN` set, the backend exposes a read-only API (header
+`Authorization: Bearer <ADMIN_TOKEN>`):
+
+| Route                        | What                                                                 |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `GET /admin/stats`           | Rooms (by lobby/playing/gameOver), players online, players in games, games started/finished since boot, uptime |
+| `GET /admin/rooms`           | Live rooms: phase, players, alive, turn, leader (most cards, then coins), winner, activity |
+| `GET /admin/rooms/:id`       | Players (coins, cards left, revealed cards, online, host), turn, pending action, recent log |
+| `GET /admin/events`          | Server-Sent Events: `log`, `phase`, `gameStarted`, `gameOver`, `roomCreated`, `roomDeleted` (`?room=<id>` filters) |
+| `GET /admin/rooms/:id/events`| Same stream, for one room                                            |
+
+It is a **spectator** view: face-down cards and player ids (which work as
+seat credentials) are never exposed, so you can play yourself without cheating.
+
+The Telegram bot (`src/telegram/`, entry `dist/telegram/index.js`) is a
+separate process built from the same image. Spanish commands: `/salas`,
+`/sala <id>`, `/seguir <id>` (live moves, batched every few seconds),
+`/dejar [id]`, `/stats`, `/avisos on|off` (game started/finished notices),
+`/ayuda`.
+
+Setup:
+
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot`
+   and copy the token into `TELEGRAM_BOT_TOKEN`.
+2. Generate an admin token, e.g.
+   `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+3. Start the bot and send it `/start`: since your chat is not allowed yet it
+   answers with your chat id. Put it in `TELEGRAM_ALLOWED_CHAT_IDS`
+   (comma-separated; group ids are negative) and restart the bot.
+
+Run both locally without Docker:
+
+```bash
+ADMIN_TOKEN=secret npm run dev                      # terminal 1
+ADMIN_TOKEN=secret TELEGRAM_BOT_TOKEN=... TELEGRAM_ALLOWED_CHAT_IDS=123   BACKEND_URL=http://localhost:8000 node dist/telegram/index.js   # terminal 2
+```
+
+Or with Docker, each service in its own container:
+
+```bash
+cp .env.example .env   # fill it in
+docker compose up -d --build
+```
+
+To also start the bot, set `COMPOSE_PROFILES=telegram` in `.env`.
+
+## Deploy on Ploi
+
+Production runs on a [Ploi](https://ploi.io) server with Docker: Nginx (managed
+by Ploi) terminates TLS and proxies to the backend container, which only
+listens on `127.0.0.1:8000`.
+
+One-time setup:
+
+1. On the server, let the Ploi user run Docker: `sudo usermod -aG docker ploi`
+   (log out and back in, or restart the Ploi daemon).
+2. Create a site for the backend domain (e.g. `api.example.com`), install this
+   repository on the `master` branch and request a Let's Encrypt certificate.
+   Leave **Quick deploy off**: GitHub Actions triggers the deploy only after
+   lint and tests pass.
+3. In the site directory create `.env` from `.env.example` (Ploi's
+   *Environment* tab, or over SSH). Add `COMPOSE_PROFILES=telegram` to run the
+   Telegram bot too.
+4. Deploy script (replace the path with the site directory Ploi shows). GitHub
+   Actions sends the tested commit as the `SHA` variable; a manual deploy from
+   the panel has no `SHA` and takes the tip of `master`:
+
+   ```bash
+   set -e
+   cd /home/ploi/api.example.com
+   git fetch origin master
+   TARGET="${SHA:-origin/master}"
+   # Only deploy commits that are on master.
+   git merge-base --is-ancestor "$TARGET" origin/master
+   git checkout --force --detach "$TARGET"
+   docker compose up -d --build --remove-orphans
+   docker image prune -f
+   echo "Deployed $(git rev-parse --short HEAD)"
+   ```
+
+5. Nginx: replace the site's `location / { ... }` block with a WebSocket and
+   SSE friendly proxy:
+
+   ```nginx
+   location / {
+       proxy_pass http://127.0.0.1:8000;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "upgrade";
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_read_timeout 1h;
+       proxy_buffering off;
+   }
+   ```
+
+6. Copy the deploy webhook URL from the site's *Repository* tab into the GitHub
+   secret `PLOI_DEPLOY_WEBHOOK`. Every push to `master` then runs lint and
+   tests and, if green, asks Ploi to deploy.
 
 ## Structure
 
@@ -33,6 +138,8 @@ src/
  │    ├── engine.ts   # CoupGame: the state machine with all the rules
  │    └── view.ts     # Per-player view + the options each player has right now
  ├── server.ts        # Rooms, sockets, reconnection, timers, heartbeat
+ ├── admin.ts         # Read-only /admin API + live event stream (SSE)
+ ├── telegram/        # Telegram bot (separate process): commands, formatting, SSE client
  ├── bot.ts           # A client that plays using only its own view
  ├── simulate.ts      # CLI: bots play a full game against any server
  ├── index.ts         # Entry point

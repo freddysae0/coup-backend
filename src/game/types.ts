@@ -81,7 +81,7 @@ export type Phase =
   | {
       kind: 'loseInfluence';
       playerId: string;
-      reason: string;
+      reason: LossReason;
       then: Continuation;
     }
   | {kind: 'exchange'; drawn: Role[]}
@@ -89,6 +89,23 @@ export type Phase =
 
 export type PhaseKind = Phase['kind'];
 
-export type LogEntry = {id: number; text: string};
+/** Structured log event so clients can translate it; params are names, roles or numbers. */
+export type LogEvent = {k: string} & Record<string, string | number>;
 
-export class GameError extends Error {}
+export type LogEntry = {id: number; text: string; event: LogEvent};
+
+export type LossReason =
+  | 'lostChallenge'
+  | 'caughtBluffing'
+  | 'couped'
+  | 'assassinated';
+
+export class GameError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly params: Record<string, string | number> = {},
+  ) {
+    super(message);
+  }
+}

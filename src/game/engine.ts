@@ -1,5 +1,7 @@
 import {
   ACTIONS,
+  LogEvent,
+  LossReason,
   ActionType,
   Continuation,
   FORCED_COUP_COINS,
@@ -53,7 +55,7 @@ export class CoupGame {
 
   private mustGetPlayer(id: string) {
     const player = this.getPlayer(id);
-    if (!player) throw new GameError('You are not in this room');
+    if (!player) throw new GameError('notInRoom', 'You are not in this room');
     return player;
   }
 
@@ -69,8 +71,8 @@ export class CoupGame {
     return player.influences.filter(i => !i.revealed);
   }
 
-  private addLog(text: string) {
-    this.log.push({id: ++this.logSeq, text});
+  private addLog(text: string, event: LogEvent) {
+    this.log.push({id: ++this.logSeq, text, event});
     if (this.log.length > MAX_LOG)
       this.log.splice(0, this.log.length - MAX_LOG);
   }
@@ -119,10 +121,17 @@ export class CoupGame {
       return existing;
     }
     if (this.phase.kind !== 'lobby') {
-      throw new GameError('The game has already started in this room');
+      throw new GameError(
+        'alreadyStarted',
+        'The game has already started in this room',
+      );
     }
     if (this.players.length >= MAX_PLAYERS) {
-      throw new GameError(`This room is full (max ${MAX_PLAYERS} players)`);
+      throw new GameError(
+        'roomFull',
+        `This room is full (max ${MAX_PLAYERS} players)`,
+        {max: MAX_PLAYERS},
+      );
     }
     const player: PlayerState = {
       id,
@@ -133,7 +142,10 @@ export class CoupGame {
       connected: true,
     };
     this.players.push(player);
-    this.addLog(`${player.name} joined the room`);
+    this.addLog(`${player.name} joined the room`, {
+      k: 'joined',
+      name: player.name,
+    });
     this.touch();
     return player;
   }
@@ -141,9 +153,13 @@ export class CoupGame {
   rename(id: string, name: string) {
     const player = this.mustGetPlayer(id);
     const newName = clean(name);
-    if (!newName) throw new GameError('Name cannot be empty');
+    if (!newName) throw new GameError('emptyName', 'Name cannot be empty');
     if (newName === player.name) return;
-    this.addLog(`${player.name} is now ${newName}`);
+    this.addLog(`${player.name} is now ${newName}`, {
+      k: 'renamed',
+      from: player.name,
+      to: newName,
+    });
     player.name = newName;
     this.touch();
   }
@@ -158,10 +174,15 @@ export class CoupGame {
   start(id: string) {
     const player = this.mustGetPlayer(id);
     if (this.phase.kind !== 'lobby')
-      throw new GameError('Game already started');
-    if (!player.isHost) throw new GameError('Only the host can start the game');
+      throw new GameError('alreadyStarted', 'Game already started');
+    if (!player.isHost)
+      throw new GameError('hostOnly', 'Only the host can start the game');
     if (this.players.length < MIN_PLAYERS) {
-      throw new GameError(`At least ${MIN_PLAYERS} players are needed`);
+      throw new GameError(
+        'notEnoughPlayers',
+        `At least ${MIN_PLAYERS} players are needed`,
+        {min: MIN_PLAYERS},
+      );
     }
 
     this.deck = this.buildDeck(this.players.length);
@@ -178,7 +199,10 @@ export class CoupGame {
     this.turnId = first.id;
     this.pending = null;
     this.log = [];
-    this.addLog(`Game started. ${first.name} goes first`);
+    this.addLog(`Game started. ${first.name} goes first`, {
+      k: 'started',
+      name: first.name,
+    });
     this.phase = {kind: 'action'};
     this.touch();
   }
@@ -187,9 +211,10 @@ export class CoupGame {
   restart(id: string) {
     const player = this.mustGetPlayer(id);
     if (this.phase.kind !== 'gameOver') {
-      throw new GameError('The game is not over yet');
+      throw new GameError('notOver', 'The game is not over yet');
     }
-    if (!player.isHost) throw new GameError('Only the host can restart');
+    if (!player.isHost)
+      throw new GameError('hostOnly', 'Only the host can restart');
     this.players = this.players.filter(p => p.connected);
     this.players.forEach(p => {
       p.influences = [];
@@ -200,7 +225,7 @@ export class CoupGame {
     this.turnId = null;
     this.pending = null;
     this.phase = {kind: 'lobby'};
-    this.addLog('Back to the lobby for a new game');
+    this.addLog('Back to the lobby for a new game', {k: 'backToLobby'});
     this.touch();
   }
 
@@ -208,7 +233,10 @@ export class CoupGame {
     if (this.players.length && !this.players.some(p => p.isHost)) {
       const next = this.players.find(p => p.connected) || this.players[0];
       next.isHost = true;
-      this.addLog(`${next.name} is now the host`);
+      this.addLog(`${next.name} is now the host`, {
+        k: 'newHost',
+        name: next.name,
+      });
     }
   }
 
@@ -222,7 +250,10 @@ export class CoupGame {
 
     if (this.phase.kind === 'lobby' || this.phase.kind === 'gameOver') {
       this.players = this.players.filter(p => p.id !== id);
-      this.addLog(`${player.name} left the room`);
+      this.addLog(`${player.name} left the room`, {
+        k: 'leftRoom',
+        name: player.name,
+      });
       if (player.isHost) this.ensureHost();
       this.touch();
       return;
@@ -235,7 +266,12 @@ export class CoupGame {
       player.isHost = false;
       this.ensureHost();
     }
-    if (wasAlive) this.addLog(`${player.name} left the game and forfeits`);
+    if (wasAlive) {
+      this.addLog(`${player.name} left the game and forfeits`, {
+        k: 'forfeit',
+        name: player.name,
+      });
+    }
     this.touch();
     if (wasAlive) this.reconcileAfterElimination(id);
   }
@@ -263,7 +299,10 @@ export class CoupGame {
       case 'challengeAction':
       case 'blockAction':
         if (pending?.actorId === id) {
-          this.addLog(`${this.nameOf(id)}'s action is cancelled`);
+          this.addLog(`${this.nameOf(id)}'s action is cancelled`, {
+            k: 'cancelled',
+            name: this.nameOf(id),
+          });
           this.endTurn();
           return;
         }
@@ -301,12 +340,20 @@ export class CoupGame {
     return (Object.keys(ACTIONS) as ActionType[]).map(type => {
       const def = ACTIONS[type];
       let reason: string | undefined;
-      if (forced && type !== 'Coup') reason = 'With 10+ coins you must Coup';
-      else if (player.coins < def.cost) reason = `Needs ${def.cost} coins`;
+      let reasonCode: 'mustCoup' | 'needsCoins' | undefined;
+      if (forced && type !== 'Coup') {
+        reason = 'With 10+ coins you must Coup';
+        reasonCode = 'mustCoup';
+      } else if (player.coins < def.cost) {
+        reason = `Needs ${def.cost} coins`;
+        reasonCode = 'needsCoins';
+      }
       return {
         type,
         enabled: !reason,
         reason,
+        reasonCode,
+        cost: def.cost,
         targets: def.targeted ? targets : [],
       };
     });
@@ -315,21 +362,25 @@ export class CoupGame {
   declareAction(id: string, type: ActionType, targetId?: string) {
     const player = this.mustGetPlayer(id);
     if (this.phase.kind !== 'action')
-      throw new GameError('Not the time to act');
-    if (this.turnId !== id) throw new GameError("It's not your turn");
+      throw new GameError('notNow', 'Not the time to act');
+    if (this.turnId !== id)
+      throw new GameError('notYourTurn', "It's not your turn");
     const def = ACTIONS[type];
-    if (!def) throw new GameError('Unknown action');
+    if (!def) throw new GameError('unknownAction', 'Unknown action');
     if (player.coins >= FORCED_COUP_COINS && type !== 'Coup') {
-      throw new GameError('With 10 or more coins you must Coup');
+      throw new GameError('mustCoup', 'With 10 or more coins you must Coup');
     }
     if (player.coins < def.cost) {
-      throw new GameError(`${type} costs ${def.cost} coins`);
+      throw new GameError('needsCoins', `${type} costs ${def.cost} coins`, {
+        action: type,
+        cost: def.cost,
+      });
     }
     let target: PlayerState | undefined;
     if (def.targeted) {
       target = targetId ? this.getPlayer(targetId) : undefined;
       if (!target || target.id === id || !this.isAlive(target)) {
-        throw new GameError('Choose a valid target');
+        throw new GameError('invalidTarget', 'Choose a valid target');
       }
     }
 
@@ -338,6 +389,13 @@ export class CoupGame {
     const claim = def.role ? ` (claims ${def.role})` : '';
     this.addLog(
       `${player.name} → ${type}${target ? ` on ${target.name}` : ''}${claim}`,
+      {
+        k: 'declare',
+        name: player.name,
+        action: type,
+        ...(target ? {target: target.name} : {}),
+        ...(def.role ? {role: def.role} : {}),
+      },
     );
     this.touch();
 
@@ -408,12 +466,13 @@ export class CoupGame {
       phase.kind !== 'blockAction' &&
       phase.kind !== 'challengeBlock'
     ) {
-      throw new GameError('There is nothing to respond to');
+      throw new GameError('nothingToRespond', 'There is nothing to respond to');
     }
     if (!this.responders().includes(id)) {
-      throw new GameError('You cannot respond to this');
+      throw new GameError('cannotRespond', 'You cannot respond to this');
     }
-    if (phase.passed.includes(id)) throw new GameError('You already passed');
+    if (phase.passed.includes(id))
+      throw new GameError('alreadyPassed', 'You already passed');
     return phase;
   }
 
@@ -459,6 +518,12 @@ export class CoupGame {
       this.addLog(
         `${this.nameOf(block?.blockerId)} blocks with ${block?.role}. ` +
           `${this.pending?.type} fails`,
+        {
+          k: 'blockStands',
+          name: this.nameOf(block?.blockerId),
+          role: block?.role ?? '',
+          action: this.pending?.type ?? '',
+        },
       );
       this.endTurn();
     }
@@ -470,20 +535,28 @@ export class CoupGame {
     const challenger = this.getPlayer(id)!;
 
     if (phase.kind === 'blockAction') {
-      throw new GameError('You can only block or pass now');
+      throw new GameError('blockOrPass', 'You can only block or pass now');
     }
 
     if (phase.kind === 'challengeAction') {
       const actor = this.getPlayer(pending.actorId)!;
       const role = ACTIONS[pending.type].role!;
-      this.addLog(`${challenger.name} challenges ${actor.name}'s ${role}`);
+      this.addLog(`${challenger.name} challenges ${actor.name}'s ${role}`, {
+        k: 'challenge',
+        name: challenger.name,
+        target: actor.name,
+        role,
+      });
       if (this.revealAndReplace(actor, role)) {
-        this.requireLoss(id, 'lost a challenge', 'blockOrResolve');
+        this.requireLoss(id, 'lostChallenge', 'blockOrResolve');
       } else {
-        this.addLog(`${actor.name} was bluffing!`);
+        this.addLog(`${actor.name} was bluffing!`, {
+          k: 'bluffing',
+          name: actor.name,
+        });
         if (pending.type === 'Assassinate')
           actor.coins += ACTIONS.Assassinate.cost;
-        this.requireLoss(actor.id, 'was caught bluffing', 'endTurn');
+        this.requireLoss(actor.id, 'caughtBluffing', 'endTurn');
       }
       return;
     }
@@ -493,27 +566,48 @@ export class CoupGame {
     const blocker = this.getPlayer(block.blockerId)!;
     this.addLog(
       `${challenger.name} challenges ${blocker.name}'s ${block.role}`,
+      {
+        k: 'challenge',
+        name: challenger.name,
+        target: blocker.name,
+        role: block.role,
+      },
     );
     if (this.revealAndReplace(blocker, block.role)) {
-      this.addLog(`${pending.type} is blocked`);
-      this.requireLoss(id, 'lost a challenge', 'endTurn');
+      this.addLog(`${pending.type} is blocked`, {
+        k: 'isBlocked',
+        action: pending.type,
+      });
+      this.requireLoss(id, 'lostChallenge', 'endTurn');
     } else {
-      this.addLog(`${blocker.name} was bluffing! The block fails`);
+      this.addLog(`${blocker.name} was bluffing! The block fails`, {
+        k: 'blockBluff',
+        name: blocker.name,
+      });
       pending.block = undefined;
-      this.requireLoss(blocker.id, 'was caught bluffing', 'resolve');
+      this.requireLoss(blocker.id, 'caughtBluffing', 'resolve');
     }
   }
 
   block(id: string, role: Role) {
     const phase = this.mustRespond(id);
     if (phase.kind !== 'blockAction')
-      throw new GameError('You cannot block now');
+      throw new GameError('cannotBlock', 'You cannot block now');
     const pending = this.pending!;
     if (!ACTIONS[pending.type].blockedBy.includes(role)) {
-      throw new GameError(`${role} cannot block ${pending.type}`);
+      throw new GameError(
+        'wrongBlocker',
+        `${role} cannot block ${pending.type}`,
+        {role, action: pending.type},
+      );
     }
     pending.block = {blockerId: id, role};
-    this.addLog(`${this.nameOf(id)} blocks ${pending.type} (claims ${role})`);
+    this.addLog(`${this.nameOf(id)} blocks ${pending.type} (claims ${role})`, {
+      k: 'blockDeclared',
+      name: this.nameOf(id),
+      action: pending.type,
+      role,
+    });
     this.openWindow('challengeBlock');
     this.touch();
     this.advanceIfAllPassed();
@@ -530,6 +624,7 @@ export class CoupGame {
     if (index === -1) return false;
     this.addLog(
       `${player.name} reveals ${withArticle(role)} and draws a new card`,
+      {k: 'reveal', name: player.name, role},
     );
     this.deck.push(role);
     this.shuffle(this.deck);
@@ -540,7 +635,11 @@ export class CoupGame {
 
   // ------------------------------------------------------- influence loss
 
-  private requireLoss(playerId: string, reason: string, then: Continuation) {
+  private requireLoss(
+    playerId: string,
+    reason: LossReason,
+    then: Continuation,
+  ) {
     const player = this.getPlayer(playerId);
     const alive = player ? this.aliveCards(player) : [];
     if (!player || alive.length === 0) {
@@ -557,13 +656,23 @@ export class CoupGame {
     this.touch();
   }
 
-  private revealInfluence(player: PlayerState, index: number, reason: string) {
+  private revealInfluence(
+    player: PlayerState,
+    index: number,
+    reason: LossReason,
+  ) {
     const influence = player.influences[index];
     influence.revealed = true;
     this.addLog(
-      `${player.name} ${reason} and loses ${withArticle(influence.role)}`,
+      `${player.name} ${REASON_TEXT[reason]} and loses ${withArticle(influence.role)}`,
+      {k: 'lose', name: player.name, reason, role: influence.role},
     );
-    if (!this.isAlive(player)) this.addLog(`${player.name} is out of the game`);
+    if (!this.isAlive(player)) {
+      this.addLog(`${player.name} is out of the game`, {
+        k: 'out',
+        name: player.name,
+      });
+    }
     this.touch();
   }
 
@@ -571,11 +680,14 @@ export class CoupGame {
     const player = this.mustGetPlayer(id);
     const phase = this.phase;
     if (phase.kind !== 'loseInfluence' || phase.playerId !== id) {
-      throw new GameError('You do not have to lose a card now');
+      throw new GameError(
+        'noLossPending',
+        'You do not have to lose a card now',
+      );
     }
     const influence = player.influences[index];
     if (!influence || influence.revealed)
-      throw new GameError('Choose one of your cards');
+      throw new GameError('chooseOwnCard', 'Choose one of your cards');
     this.revealInfluence(player, index, phase.reason);
     if (this.checkGameOver()) return;
     this.continueWith(phase.then);
@@ -599,7 +711,10 @@ export class CoupGame {
       return;
     }
     if (def.targeted && !this.isAlive(this.getPlayer(pending.targetId || ''))) {
-      this.addLog(`${pending.type} has no effect: the target is already out`);
+      this.addLog(`${pending.type} has no effect: the target is already out`, {
+        k: 'noEffect',
+        action: pending.type,
+      });
       this.endTurn();
       return;
     }
@@ -622,7 +737,10 @@ export class CoupGame {
       return;
     }
     if (ACTIONS[pending.type].targeted && !this.isAlive(target)) {
-      this.addLog(`${pending.type} has no effect: the target is already out`);
+      this.addLog(`${pending.type} has no effect: the target is already out`, {
+        k: 'noEffect',
+        action: pending.type,
+      });
       this.endTurn();
       return;
     }
@@ -631,30 +749,48 @@ export class CoupGame {
     switch (pending.type) {
       case 'Income':
         actor.coins += 1;
-        this.addLog(`${actor.name} takes 1 coin`);
+        this.addLog(`${actor.name} takes 1 coin`, {
+          k: 'income',
+          name: actor.name,
+        });
         return this.endTurn();
       case 'Foreign aid':
         actor.coins += 2;
-        this.addLog(`${actor.name} takes 2 coins of foreign aid`);
+        this.addLog(`${actor.name} takes 2 coins of foreign aid`, {
+          k: 'foreignAid',
+          name: actor.name,
+        });
         return this.endTurn();
       case 'Tax':
         actor.coins += 3;
-        this.addLog(`${actor.name} takes 3 coins of tax`);
+        this.addLog(`${actor.name} takes 3 coins of tax`, {
+          k: 'tax',
+          name: actor.name,
+        });
         return this.endTurn();
       case 'Steal': {
         const amount = Math.min(2, target!.coins);
         target!.coins -= amount;
         actor.coins += amount;
-        this.addLog(`${actor.name} steals ${amount} from ${target!.name}`);
+        this.addLog(`${actor.name} steals ${amount} from ${target!.name}`, {
+          k: 'steal',
+          name: actor.name,
+          target: target!.name,
+          amount,
+        });
         return this.endTurn();
       }
       case 'Coup':
-        return this.requireLoss(target!.id, 'was couped', 'endTurn');
+        return this.requireLoss(target!.id, 'couped', 'endTurn');
       case 'Assassinate':
-        return this.requireLoss(target!.id, 'was assassinated', 'endTurn');
+        return this.requireLoss(target!.id, 'assassinated', 'endTurn');
       case 'Exchange': {
         const drawn = this.deck.splice(0, 2);
-        this.addLog(`${actor.name} draws ${drawn.length} cards to exchange`);
+        this.addLog(`${actor.name} draws ${drawn.length} cards to exchange`, {
+          k: 'exchangeDraw',
+          name: actor.name,
+          count: drawn.length,
+        });
         this.phase = {kind: 'exchange', drawn};
         return;
       }
@@ -674,7 +810,8 @@ export class CoupGame {
 
   exchange(id: string, keep: number[]) {
     const options = this.exchangeOptions(id);
-    if (!options) throw new GameError('You are not exchanging cards');
+    if (!options)
+      throw new GameError('notExchanging', 'You are not exchanging cards');
     const unique = Array.from(new Set(keep));
     if (
       unique.length !== options.keep ||
@@ -683,7 +820,11 @@ export class CoupGame {
         i => !Number.isInteger(i) || i < 0 || i >= options.cards.length,
       )
     ) {
-      throw new GameError(`Choose exactly ${options.keep} cards to keep`);
+      throw new GameError(
+        'keepCount',
+        `Choose exactly ${options.keep} cards to keep`,
+        {count: options.keep},
+      );
     }
     const player = this.getPlayer(id)!;
     const kept = unique.map(i => options.cards[i]);
@@ -694,7 +835,11 @@ export class CoupGame {
     });
     this.deck.push(...returned);
     this.shuffle(this.deck);
-    this.addLog(`${player.name} returns ${returned.length} cards to the deck`);
+    this.addLog(`${player.name} returns ${returned.length} cards to the deck`, {
+      k: 'exchangeReturn',
+      name: player.name,
+      count: returned.length,
+    });
     this.endTurn();
   }
 
@@ -709,7 +854,14 @@ export class CoupGame {
     const winner = alive[0];
     this.phase = {kind: 'gameOver', winnerId: winner ? winner.id : null};
     this.pending = null;
-    this.addLog(winner ? `${winner.name} wins the game!` : 'Nobody wins');
+    if (winner) {
+      this.addLog(`${winner.name} wins the game!`, {
+        k: 'win',
+        name: winner.name,
+      });
+    } else {
+      this.addLog('Nobody wins', {k: 'nobodyWins'});
+    }
     this.touch();
     return true;
   }
@@ -741,3 +893,10 @@ function withArticle(role: Role) {
 function clean(name: string | undefined) {
   return (name || '').toString().trim().slice(0, 24);
 }
+
+const REASON_TEXT: Record<LossReason, string> = {
+  lostChallenge: 'lost a challenge',
+  caughtBluffing: 'was caught bluffing',
+  couped: 'was couped',
+  assassinated: 'was assassinated',
+};
