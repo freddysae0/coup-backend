@@ -1,10 +1,16 @@
 # Backend + Telegram bot, each in its own container (same image, different
 # command). Usage: cp .env.example .env && docker compose up -d --build
 # The bot only starts when .env sets COMPOSE_PROFILES=telegram.
+# Fixed project name: containers are coup-backend-1 and coup-telegram-bot-1
+# whatever the checkout directory is called.
+name: coup
+
 services:
   backend:
     build: .
     image: coup-backend:local
+    # Built on the server, never pulled from a registry.
+    pull_policy: build
     restart: unless-stopped
     env_file: .env
     environment:
@@ -21,6 +27,7 @@ services:
 
   telegram-bot:
     image: coup-backend:local
+    pull_policy: never
     profiles: ['telegram']
     command: ['node', 'dist/telegram/index.js']
     restart: unless-stopped
